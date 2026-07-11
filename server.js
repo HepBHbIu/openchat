@@ -170,8 +170,8 @@ function handleMessage(ws, userId, msg) {
         reply_to: msg.reply_to || null,
       };
       
-      // No server storage — just relay to all
-      broadcast({ type: 'message', message: chatMsg });
+      // Send to same channel only
+      broadcastToChannel(user.channel, { type: 'message', message: chatMsg });
       break;
     }
     
