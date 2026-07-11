@@ -132,7 +132,7 @@
   </div>
 
 <script>
-let ws, nick, ch = null;
+let myColor = '#e94560';
 
 document.getElementById('go').onclick = join;
 document.getElementById('nick').onkeydown = e => { if (e.key === 'Enter') join(); };
@@ -147,13 +147,18 @@ function join() {
 
 function connect() {
   ws = new WebSocket(`ws://${location.host}`);
-  ws.onopen = () => { loadChannels(); };
+  ws.onopen = () => {
+    loadChannels();
+    if (ch) pickCh(ch); // Auto-rejoin on reconnect
+  };
   ws.onmessage = e => { onMsg(JSON.parse(e.data)); };
   ws.onclose = () => { setTimeout(connect, 2000); };
 }
 
 function onMsg(m) {
-  if (m.type === 'history') {
+  if (m.type === 'welcome') {
+    myColor = genColor(nick);
+  } else if (m.type === 'history') {
     clearMsgs();
     m.messages.forEach(msg => appendMsg(msg));
     if (m.messages.length === 0) {
@@ -199,13 +204,19 @@ function pickCh(id) {
   });
 }
 
+function genColor(nick) {
+  let h = 0;
+  for (let i = 0; i < nick.length; i++) h = nick.charCodeAt(i) + ((h << 5) - h);
+  return `hsl(${Math.abs(h % 360)}, 70%, 60%)`;
+}
+
 function sendMsg() {
   const inp = document.getElementById('inp');
   const t = inp.value.trim();
   if (!t) return;
   if (!ws || ws.readyState !== 1) return;
   ws.send(JSON.stringify({ type: 'message', text: t }));
-  appendMsg({ nickname: nick, text: t, color: '#e94560', timestamp: Date.now() });
+  appendMsg({ nickname: nick, text: t, color: myColor, timestamp: Date.now() });
   inp.value = '';
 }
 
@@ -239,7 +250,7 @@ function createCh() {
     .then(r => r.json()).then(c => { if (c.id) { hideModal(); pickCh(c.id); } });
 }
 
-function esc(s) { return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+function esc(s) { return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
 
 document.getElementById('send').onclick = sendMsg;
 document.getElementById('inp').onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMsg(); } };

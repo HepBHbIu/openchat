@@ -12,12 +12,41 @@ const PORT = process.env.PORT || 3001;
 const PEERS = (process.env.PEERS || '').split(',').filter(Boolean);
 const SERVER_NAME = process.env.SERVER_NAME || 'Node-' + PORT;
 const PUBLIC_URL = process.env.PUBLIC_URL || `http://localhost:${PORT}`;
+const FED_SECRET = process.env.FED_SECRET || ''; // Shared secret for federation
 
 const channels = new Map();
 const users = new Map();
 const history = new Map();
 const knownPeers = new Set(PEERS);
+const rateLimiter = new Map(); // ip -> [timestamps]
 const MAX_HISTORY = 50;
+const RATE_LIMIT = 30; // messages per minute
+
+// Sanitize channel ID
+function sanitizeId(str) {
+  return String(str || '').toLowerCase().replace(/[^a-z0-9а-яё-]/gi, '').replace(/-+/g, '-').slice(0, 50) || 'chat';
+}
+
+// Rate limit check
+function checkRate(ip) {
+  const now = Date.now();
+  const timestamps = rateLimiter.get(ip) || [];
+  const recent = timestamps.filter(t => now - t < 60000);
+  if (recent.length >= RATE_LIMIT) return false;
+  recent.push(now);
+  rateLimiter.set(ip, recent);
+  return true;
+}
+
+// Clean rate limiter
+setInterval(() => {
+  const now = Date.now();
+  rateLimiter.forEach((ts, ip) => {
+    const recent = ts.filter(t => now - t < 60000);
+    if (recent.length === 0) rateLimiter.delete(ip);
+    else rateLimiter.set(ip, recent);
+  });
+}, 60000);
 
 channels.set('general', { id: 'general', name: 'Общий', icon: '💬', description: 'Главный чат', created_at: Date.now(), last_activity: Date.now() });
 
@@ -26,139 +55,173 @@ app.use(express.static('public'));
 // ===== API =====
 app.get('/api/channels', (req, res) => res.json(Array.from(channels.values())));
 app.get('/api/stats', (req, res) => res.json({ users: users.size, channels: channels.size, peers: knownPeers.size }));
-app.get('/api/channels/:id/history', (req, res) => res.json(history.get(req.params.id) || []));
+app.get('/api/channels/:id/history', (req, res) => res.json(history.get(sanitizeId(req.params.id)) || []));
 
 app.post('/api/channels', (req, res) => {
+  const ip = req.ip;
+  if (!checkRate(ip)) return res.status(429).json({ error: 'Rate limit' });
+
   const { name, icon, description } = req.body;
   if (!name) return res.status(400).json({ error: 'Name required' });
-  const id = name.toLowerCase().replace(/[^a-z0-9а-яё]/gi, '-').replace(/-+/g, '-');
+  const id = sanitizeId(name);
   if (channels.has(id)) return res.status(409).json({ error: 'Channel exists' });
-  const ch = { id, name, icon: icon || '💬', description: description || '', created_at: Date.now(), last_activity: Date.now() };
+  const ch = { id, name: name.slice(0, 50), icon: (icon || '💬').slice(0, 2), description: (description || '').slice(0, 200), created_at: Date.now(), last_activity: Date.now() };
   channels.set(id, ch);
   relay({ type: 'channel_created', channel: ch });
   res.json(ch);
 });
 
 // ===== FEDERATION =====
+function verifyFedAuth(req) {
+  if (!FED_SECRET) return true;
+  return req.headers['x-fed-secret'] === FED_SECRET;
+}
+
 app.get('/federation/info', (req, res) => res.json({
-  name: 'TypoChat', version: '1.0.0', server: SERVER_NAME, public_url: PUBLIC_URL,
+  name: 'TypoChat', version: '1.1.0', server: SERVER_NAME, public_url: PUBLIC_URL,
   channels: channels.size, users: users.size, peers: Array.from(knownPeers),
 }));
 
 app.get('/federation/channels', (req, res) => res.json(Array.from(channels.values())));
 
-app.get('/federation/history/:channelId', (req, res) => res.json(history.get(req.params.channelId) || []));
+app.get('/federation/history/:channelId', (req, res) => res.json(history.get(sanitizeId(req.params.channelId)) || []));
 
 app.post('/federation/register', (req, res) => {
+  if (!verifyFedAuth(req)) return res.status(401).json({ error: 'Unauthorized' });
   const { url, name } = req.body;
-  if (!url) return res.status(400).json({ error: 'url required' });
+  if (!url || typeof url !== 'string') return res.status(400).json({ error: 'url required' });
+  if (!url.startsWith('http://') && !url.startsWith('https://')) return res.status(400).json({ error: 'Invalid URL' });
   knownPeers.add(url);
   console.log(`[Federation] Registered peer: ${url} (${name || '?'})`);
   res.json({ ok: true, peers: Array.from(knownPeers), channels: Array.from(channels.values()), server: SERVER_NAME });
 });
 
 app.post('/federation/relay', (req, res) => {
+  if (!verifyFedAuth(req)) return res.status(401).json({ error: 'Unauthorized' });
   const { from, msg } = req.body;
-  if (!msg) return res.status(400).json({ error: 'No message' });
+  if (!msg || typeof msg !== 'object') return res.status(400).json({ error: 'No message' });
 
-  // Store message in history
+  // Sanitize channel IDs in messages
   if (msg.type === 'message' && msg.message) {
-    const ch = msg.message.channel;
-    if (!channels.has(ch)) {
-      channels.set(ch, { id: ch, name: ch, icon: '💬', description: '', created_at: Date.now(), last_activity: Date.now() });
+    const chId = sanitizeId(msg.message.channel);
+    msg.message.channel = chId;
+    msg.message.nickname = String(msg.message.nickname || '').slice(0, 20);
+    msg.message.text = String(msg.message.text || '').slice(0, 2000);
+
+    if (!channels.has(chId)) {
+      channels.set(chId, { id: chId, name: chId, icon: '💬', description: '', created_at: Date.now(), last_activity: Date.now() });
     }
-    if (!history.has(ch)) history.set(ch, []);
-    history.get(ch).push(msg.message);
-    if (history.get(ch).length > MAX_HISTORY) history.get(ch).shift();
+    if (!history.has(chId)) history.set(chId, []);
+    history.get(chId).push(msg.message);
+    if (history.get(chId).length > MAX_HISTORY) history.get(chId).shift();
+
+    broadcastToChannel(chId, msg);
   }
 
-  // Store channel
   if (msg.type === 'channel_created' && msg.channel) {
+    msg.channel.id = sanitizeId(msg.channel.id);
     channels.set(msg.channel.id, { ...msg.channel, last_activity: Date.now() });
-  }
-
-  // Broadcast to local clients
-  if (msg.channel) {
-    broadcastToChannel(msg.channel, msg);
-  } else {
     broadcastAllLocal(msg);
   }
+
+  if (msg.type === 'channel_deleted' && msg.channelId) {
+    msg.channelId = sanitizeId(msg.channelId);
+    channels.delete(msg.channelId);
+    history.delete(msg.channelId);
+    broadcastAllLocal(msg);
+  }
+
   res.json({ ok: true });
 });
 
 // ===== AUTO-DISCOVERY =====
+let discovering = false;
+
 async function discoverPeers() {
-  for (const peer of knownPeers) {
-    try {
-      const res = await fetch(`${peer}/federation/info`, { signal: AbortSignal.timeout(3000) });
-      if (res.ok) {
-        const info = await res.json();
-        console.log(`[Federation] Found peer: ${peer} (${info.server})`);
+  if (discovering) return;
+  discovering = true;
+  try {
+    for (const peer of knownPeers) {
+      try {
+        const headers = {};
+        if (FED_SECRET) headers['x-fed-secret'] = FED_SECRET;
 
-        // Register ourselves with peer
-        await fetch(`${peer}/federation/register`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url: PUBLIC_URL, name: SERVER_NAME }),
-        });
+        const res = await fetch(`${peer}/federation/info`, { signal: AbortSignal.timeout(5000), headers });
+        if (res.ok) {
+          const info = await res.json();
+          console.log(`[Federation] Peer: ${peer} (${info.server})`);
 
-        // Sync channels from peer
-        const chRes = await fetch(`${peer}/federation/channels`, { signal: AbortSignal.timeout(3000) });
-        if (chRes.ok) {
-          const peerChannels = await chRes.json();
-          for (const ch of peerChannels) {
-            if (!channels.has(ch.id)) {
-              channels.set(ch.id, ch);
-              console.log(`[Federation] Synced channel: ${ch.id}`);
-            }
-          }
-        }
+          await fetch(`${peer}/federation/register`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...headers },
+            body: JSON.stringify({ url: PUBLIC_URL, name: SERVER_NAME }),
+          });
 
-        // Sync history from peer
-        for (const [chId] of channels) {
-          try {
-            const hRes = await fetch(`${peer}/federation/history/${chId}`, { signal: AbortSignal.timeout(3000) });
-            if (hRes.ok) {
-              const msgs = await hRes.json();
-              if (msgs.length > 0) {
-                if (!history.has(chId)) history.set(chId, []);
-                const existing = new Set(history.get(chId).map(m => m.id));
-                for (const msg of msgs) {
-                  if (!existing.has(msg.id)) history.get(chId).push(msg);
-                }
-                history.get(chId).sort((a, b) => a.timestamp - b.timestamp);
-                if (history.get(chId).length > MAX_HISTORY) history.get(chId).splice(0, history.get(chId).length - MAX_HISTORY);
+          const chRes = await fetch(`${peer}/federation/channels`, { signal: AbortSignal.timeout(5000), headers });
+          if (chRes.ok) {
+            for (const ch of await chRes.json()) {
+              ch.id = sanitizeId(ch.id);
+              if (!channels.has(ch.id)) {
+                channels.set(ch.id, ch);
+                console.log(`[Federation] Synced channel: ${ch.id}`);
               }
             }
-          } catch {}
-        }
+          }
 
-        // Get more peers from this peer
-        if (info.peers) {
-          for (const p of info.peers) {
-            if (p !== PUBLIC_URL && !knownPeers.has(p)) {
-              knownPeers.add(p);
-              console.log(`[Federation] Discovered new peer: ${p}`);
+          for (const [chId] of channels) {
+            try {
+              const hRes = await fetch(`${peer}/federation/history/${chId}`, { signal: AbortSignal.timeout(5000), headers });
+              if (hRes.ok) {
+                const msgs = await hRes.json();
+                if (msgs.length > 0) {
+                  if (!history.has(chId)) history.set(chId, []);
+                  const existing = new Set(history.get(chId).map(m => m.id));
+                  for (const msg of msgs.slice(-MAX_HISTORY)) {
+                    msg.nickname = String(msg.nickname || '').slice(0, 20);
+                    msg.text = String(msg.text || '').slice(0, 2000);
+                    if (!existing.has(msg.id)) history.get(chId).push(msg);
+                  }
+                  history.get(chId).sort((a, b) => a.timestamp - b.timestamp);
+                  if (history.get(chId).length > MAX_HISTORY) history.get(chId).splice(0, history.get(chId).length - MAX_HISTORY);
+                }
+              }
+            } catch {}
+          }
+
+          if (info.peers) {
+            for (const p of info.peers) {
+              if (p !== PUBLIC_URL && !knownPeers.has(p) && typeof p === 'string' && (p.startsWith('http://') || p.startsWith('https://'))) {
+                knownPeers.add(p);
+                console.log(`[Federation] Discovered: ${p}`);
+              }
             }
           }
         }
-      }
-    } catch {}
+      } catch {}
+    }
+  } finally {
+    discovering = false;
   }
 }
 
-// Periodic sync
 setInterval(discoverPeers, 60000);
 
 // ===== WEBSOCKET =====
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
+  const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
   const userId = uuidv4();
   ws.userId = userId;
   ws.isAlive = true;
+  ws.userChannel = null;
 
   ws.on('pong', () => { ws.isAlive = true; });
 
+  ws.on('error', (err) => {
+    console.error(`[WS] Error for ${userId}:`, err.message);
+  });
+
   ws.on('message', (data) => {
+    if (!checkRate(ip)) return;
     try { handleMessage(ws, userId, JSON.parse(data.toString())); } catch {}
   });
 
@@ -177,16 +240,24 @@ wss.on('connection', (ws) => {
 function handleMessage(ws, userId, msg) {
   switch (msg.type) {
     case 'join': {
-      const { nickname, channel } = msg;
+      const nickname = String(msg.nickname || '').slice(0, 20);
+      const channel = sanitizeId(msg.channel);
       if (!nickname || !channel) return;
 
-      // Auto-create channel if doesn't exist
+      // Leave old channel if switching
+      const oldUser = users.get(userId);
+      if (oldUser && oldUser.channel !== channel) {
+        broadcastToChannel(oldUser.channel, { type: 'user_left', nickname: oldUser.nickname });
+        broadcastChannelUsers(oldUser.channel);
+      }
+
       if (!channels.has(channel)) {
         channels.set(channel, { id: channel, name: channel, icon: '💬', description: '', created_at: Date.now(), last_activity: Date.now() });
       }
 
-      const user = { id: userId, nickname: nickname.slice(0, 20), channel, color: genColor(nickname) };
+      const user = { id: userId, nickname, channel, color: genColor(nickname) };
       users.set(userId, user);
+      ws.userChannel = channel;
 
       const msgs = history.get(channel) || [];
       ws.send(JSON.stringify({ type: 'history', channel, messages: msgs }));
@@ -201,13 +272,14 @@ function handleMessage(ws, userId, msg) {
     case 'message': {
       const user = users.get(userId);
       if (!user) return;
+      if (!msg.text || typeof msg.text !== 'string') return;
 
       const ch = channels.get(user.channel);
       if (ch) ch.last_activity = Date.now();
 
       const chatMsg = {
         id: uuidv4(), nickname: user.nickname, channel: user.channel,
-        text: (msg.text || '').slice(0, 2000), color: user.color,
+        text: msg.text.slice(0, 2000), color: user.color,
         timestamp: Date.now(),
       };
 
@@ -232,12 +304,10 @@ function handleMessage(ws, userId, msg) {
 // ===== BROADCAST =====
 function relay(msg) {
   broadcastAllLocal(msg);
+  const headers = { 'Content-Type': 'application/json' };
+  if (FED_SECRET) headers['x-fed-secret'] = FED_SECRET;
   for (const peer of knownPeers) {
-    fetch(`${peer}/federation/relay`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ from: SERVER_NAME, msg }),
-    }).catch(() => {});
+    fetch(`${peer}/federation/relay`, { method: 'POST', headers, body: JSON.stringify({ from: SERVER_NAME, msg }) }).catch(() => {});
   }
 }
 
@@ -288,11 +358,14 @@ setInterval(() => {
   });
 }, 60000);
 
-// Start discovery
+// Health check
+app.get('/health', (req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
+
 setTimeout(discoverPeers, 2000);
 
 server.listen(PORT, () => {
   console.log(`TypoChat running on http://localhost:${PORT}`);
   console.log(`Public URL: ${PUBLIC_URL}`);
-  console.log(`Peers: ${knownPeers.size > 0 ? Array.from(knownPeers).join(', ') : 'none (add with PEERS=env)'}`);
+  console.log(`Federation: ${FED_SECRET ? 'enabled (secret set)' : 'open (no secret)'}`);
+  console.log(`Peers: ${knownPeers.size > 0 ? Array.from(knownPeers).join(', ') : 'none'}`);
 });
