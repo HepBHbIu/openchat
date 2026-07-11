@@ -9,6 +9,9 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
 const PORT = process.env.PORT || 3001;
 const PEERS = (process.env.PEERS || '').split(',').filter(Boolean);
 const SERVER_NAME = process.env.SERVER_NAME || 'Node-' + PORT;
