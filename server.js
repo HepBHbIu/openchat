@@ -20,7 +20,8 @@ const history = new Map();
 const knownPeers = new Set(PEERS);
 const rateLimiter = new Map(); // ip -> [timestamps]
 const MAX_HISTORY = 50;
-const RATE_LIMIT = 30; // messages per minute
+const MAX_PEERS = 50;
+const RATE_LIMIT = 30;
 
 // Sanitize channel ID
 function sanitizeId(str) {
@@ -52,10 +53,26 @@ channels.set('general', { id: 'general', name: 'Общий', icon: '💬', descr
 
 app.use(express.static('public'));
 
+// Security headers
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  next();
+});
+
 // ===== API =====
 app.get('/api/channels', (req, res) => res.json(Array.from(channels.values())));
 app.get('/api/stats', (req, res) => res.json({ users: users.size, channels: channels.size, peers: knownPeers.size }));
-app.get('/api/channels/:id/history', (req, res) => res.json(history.get(sanitizeId(req.params.id)) || []));
+app.get('/api/channels/:id/history', (req, res) => {
+  const page = parseInt(req.query.page) || 0;
+  const limit = parseInt(req.query.limit) || 50;
+  const msgs = history.get(sanitizeId(req.params.id)) || [];
+  const start = Math.max(0, msgs.length - limit - (page * limit));
+  const end = msgs.length - (page * limit);
+  res.json(msgs.slice(Math.max(0, start), Math.max(0, end)));
+});
 
 app.post('/api/channels', (req, res) => {
   const ip = req.ip;
@@ -188,9 +205,10 @@ async function discoverPeers() {
             } catch {}
           }
 
-          if (info.peers) {
+          if (info.peers && knownPeers.size < MAX_PEERS) {
             for (const p of info.peers) {
               if (p !== PUBLIC_URL && !knownPeers.has(p) && typeof p === 'string' && (p.startsWith('http://') || p.startsWith('https://'))) {
+                if (knownPeers.size >= MAX_PEERS) break;
                 knownPeers.add(p);
                 console.log(`[Federation] Discovered: ${p}`);
               }
@@ -362,6 +380,18 @@ setInterval(() => {
 app.get('/health', (req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
 
 setTimeout(discoverPeers, 2000);
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('[Server] Shutting down...');
+  wss.clients.forEach(ws => ws.close(1001, 'Server shutting down'));
+  wss.close(() => {
+    server.close(() => process.exit(0));
+  });
+  setTimeout(() => process.exit(1), 5000);
+});
+
+process.on('SIGINT', () => process.emit('SIGTERM'));
 
 server.listen(PORT, () => {
   console.log(`TypoChat running on http://localhost:${PORT}`);

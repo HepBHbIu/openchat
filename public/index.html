@@ -146,13 +146,15 @@ function join() {
 }
 
 function connect() {
-  ws = new WebSocket(`ws://${location.host}`);
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(`${proto}//${location.host}`);
   ws.onopen = () => {
     loadChannels();
     if (ch) pickCh(ch); // Auto-rejoin on reconnect
   };
   ws.onmessage = e => { onMsg(JSON.parse(e.data)); };
   ws.onclose = () => { setTimeout(connect, 2000); };
+  ws.onerror = () => {};
 }
 
 function onMsg(m) {
