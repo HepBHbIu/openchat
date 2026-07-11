@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenChat</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0a0f; color: #fff; height: 100vh; overflow: hidden; }
+    
+    #login-screen {
+      display: flex; align-items: center; justify-content: center;
+      height: 100vh; background: linear-gradient(135deg, #0a0a0f 0%, #1a1a2e 100%);
+    }
+    .login-box {
+      background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 24px; padding: 40px; width: 360px; text-align: center;
+      backdrop-filter: blur(20px);
+    }
+    .login-box h1 { font-size: 28px; margin-bottom: 8px; background: linear-gradient(135deg, #e94560, #ff6b81); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .login-box p { color: rgba(255,255,255,0.4); font-size: 13px; margin-bottom: 24px; }
+    .login-box input {
+      width: 100%; padding: 14px 18px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.06);
+      background: rgba(255,255,255,0.04); color: #fff; font-size: 15px; outline: none;
+      transition: all 0.2s;
+    }
+    .login-box input:focus { border-color: #e94560; box-shadow: 0 0 20px rgba(233,69,96,0.2); }
+    .login-box input::placeholder { color: rgba(255,255,255,0.2); }
+    .login-box button {
+      width: 100%; padding: 14px; border-radius: 12px; border: none;
+      background: linear-gradient(135deg, #e94560, #ff6b81); color: #fff;
+      font-size: 15px; font-weight: 600; cursor: pointer; margin-top: 12px;
+      transition: all 0.2s;
+    }
+    .login-box button:hover { transform: translateY(-1px); box-shadow: 0 8px 25px rgba(233,69,96,0.4); }
+    .login-box .stats { margin-top: 20px; display: flex; justify-content: center; gap: 20px; }
+    .login-box .stat { text-align: center; }
+    .login-box .stat-num { font-size: 20px; font-weight: 700; color: #e94560; }
+    .login-box .stat-label { font-size: 11px; color: rgba(255,255,255,0.3); }
+    
+    #chat-screen { display: none; height: 100vh; }
+    .chat-layout { display: flex; height: 100vh; }
+    
+    /* Sidebar */
+    .sidebar {
+      width: 260px; background: rgba(255,255,255,0.02); border-right: 1px solid rgba(255,255,255,0.04);
+      display: flex; flex-direction: column;
+    }
+    .sidebar-header {
+      padding: 16px; border-bottom: 1px solid rgba(255,255,255,0.04);
+      display: flex; align-items: center; gap: 12px;
+    }
+    .sidebar-header h2 { font-size: 16px; background: linear-gradient(135deg, #e94560, #ff6b81); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .channels { flex: 1; overflow-y: auto; padding: 8px; }
+    .channel {
+      display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+      border-radius: 10px; cursor: pointer; transition: all 0.15s;
+    }
+    .channel:hover { background: rgba(255,255,255,0.04); }
+    .channel.active { background: rgba(233,69,96,0.15); }
+    .channel-icon { font-size: 18px; width: 28px; text-align: center; }
+    .channel-name { font-size: 13px; color: rgba(255,255,255,0.7); }
+    .channel.active .channel-name { color: #fff; }
+    .users-panel {
+      border-top: 1px solid rgba(255,255,255,0.04); padding: 12px;
+      max-height: 200px; overflow-y: auto;
+    }
+    .users-panel h4 { font-size: 11px; color: rgba(255,255,255,0.3); text-transform: uppercase; margin-bottom: 8px; }
+    .user-item { font-size: 12px; color: rgba(255,255,255,0.5); padding: 3px 0; display: flex; align-items: center; gap: 6px; }
+    .user-dot { width: 6px; height: 6px; border-radius: 50%; }
+    
+    /* Main chat */
+    .main-chat { flex: 1; display: flex; flex-direction: column; }
+    .chat-header {
+      padding: 14px 20px; border-bottom: 1px solid rgba(255,255,255,0.04);
+      display: flex; align-items: center; gap: 12px;
+    }
+    .chat-header-icon { font-size: 20px; }
+    .chat-header-info h3 { font-size: 15px; }
+    .chat-header-info p { font-size: 11px; color: rgba(255,255,255,0.3); }
+    
+    .messages {
+      flex: 1; overflow-y: auto; padding: 16px 20px; display: flex;
+      flex-direction: column; gap: 4px;
+    }
+    .msg {
+      padding: 8px 12px; border-radius: 12px; max-width: 80%;
+      animation: fadeIn 0.15s ease-out;
+    }
+    .msg-header { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
+    .msg-nick { font-size: 13px; font-weight: 600; }
+    .msg-time { font-size: 10px; color: rgba(255,255,255,0.2); }
+    .msg-text { font-size: 14px; line-height: 1.5; word-break: break-word; color: rgba(255,255,255,0.85); }
+    .msg-system { background: rgba(255,255,255,0.02); color: rgba(255,255,255,0.3); font-size: 12px; font-style: italic; padding: 6px 12px; max-width: 100%; }
+    .msg:hover { background: rgba(255,255,255,0.02); }
+    
+    .typing-indicator { padding: 4px 20px; font-size: 11px; color: rgba(255,255,255,0.2); min-height: 20px; }
+    
+    .input-area {
+      padding: 12px 16px; border-top: 1px solid rgba(255,255,255,0.04);
+      display: flex; gap: 10px;
+    }
+    .input-area input {
+      flex: 1; padding: 12px 16px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.06);
+      background: rgba(255,255,255,0.04); color: #fff; font-size: 14px; outline: none;
+    }
+    .input-area input:focus { border-color: #e94560; }
+    .input-area input::placeholder { color: rgba(255,255,255,0.2); }
+    .input-area button {
+      padding: 12px 24px; border-radius: 12px; border: none;
+      background: linear-gradient(135deg, #e94560, #ff6b81); color: #fff;
+      font-size: 14px; font-weight: 600; cursor: pointer;
+    }
+    .input-area button:hover { box-shadow: 0 4px 15px rgba(233,69,96,0.4); }
+    
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+    
+    /* Mobile */
+    @media (max-width: 768px) {
+      .sidebar { display: none; }
+      .sidebar.open { display: flex; position: fixed; z-index: 100; width: 100%; height: 100vh; }
+    }
+  </style>
+</head>
+<body>
+  <div id="login-screen">
+    <div class="login-box">
+      <h1>OpenChat</h1>
+      <p>Анонимный чат без регистрации</p>
+      <input type="text" id="nickname-input" placeholder="Твой ник" maxlength="20" autofocus>
+      <button id="join-btn">Войти</button>
+      <div class="stats">
+        <div class="stat"><div class="stat-num" id="stat-users">0</div><div class="stat-label">Онлайн</div></div>
+        <div class="stat"><div class="stat-num" id="stat-channels">0</div><div class="stat-label">Каналов</div></div>
+        <div class="stat"><div class="stat-num" id="stat-messages">0</div><div class="stat-label">Сообщений</div></div>
+      </div>
+    </div>
+  </div>
+  
+  <div id="chat-screen">
+    <div class="chat-layout">
+      <div class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+          <h2>OpenChat</h2>
+        </div>
+        <div class="channels" id="channels"></div>
+        <div class="users-panel">
+          <h4>Онлайн</h4>
+          <div id="users-list"></div>
+        </div>
+      </div>
+      <div class="main-chat">
+        <div class="chat-header">
+          <span class="chat-header-icon" id="channel-icon">💬</span>
+          <div class="chat-header-info">
+            <h3 id="channel-name">Общий</h3>
+            <p id="channel-desc">Главный чат</p>
+          </div>
+        </div>
+        <div class="messages" id="messages"></div>
+        <div class="typing-indicator" id="typing"></div>
+        <div class="input-area">
+          <input type="text" id="msg-input" placeholder="Сообщение..." maxlength="2000">
+          <button id="send-btn">→</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let ws, nickname, currentChannel = 'general';
+    const colors = {};
+    
+    // Load stats
+    fetch('/api/stats').then(r => r.json()).then(s => {
+      document.getElementById('stat-users').textContent = s.users;
+      document.getElementById('stat-channels').textContent = s.channels;
+      document.getElementById('stat-messages').textContent = s.messages;
+    });
+    
+    // Load channels
+    fetch('/api/channels').then(r => r.json()).then(chs => {
+      document.getElementById('stat-channels').textContent = chs.length;
+      renderChannels(chs);
+    });
+    
+    function renderChannels(chs) {
+      const el = document.getElementById('channels');
+      el.innerHTML = chs.map(ch => `
+        <div class="channel ${ch.id === currentChannel ? 'active' : ''}" onclick="switchChannel('${ch.id}')">
+          <span class="channel-icon">${ch.icon}</span>
+          <span class="channel-name">${ch.name}</span>
+        </div>
+      `).join('');
+    }
+    
+    document.getElementById('join-btn').onclick = join;
+    document.getElementById('nickname-input').onkeydown = (e) => { if (e.key === 'Enter') join(); };
+    
+    function join() {
+      nickname = document.getElementById('nickname-input').value.trim();
+      if (!nickname) return;
+      
+      document.getElementById('login-screen').style.display = 'none';
+      document.getElementById('chat-screen').style.display = 'block';
+      
+      connect();
+    }
+    
+    function connect() {
+      ws = new WebSocket(`ws://${location.host}`);
+      
+      ws.onopen = () => {
+        ws.send(JSON.stringify({ type: 'join', nickname, channel: currentChannel }));
+      };
+      
+      ws.onmessage = (e) => {
+        const msg = JSON.parse(e.data);
+        handleWSMessage(msg);
+      };
+      
+      ws.onclose = () => {
+        setTimeout(connect, 2000);
+      };
+    }
+    
+    function handleWSMessage(msg) {
+      switch (msg.type) {
+        case 'welcome':
+          renderChannels(msg.channels);
+          break;
+        case 'history':
+          msg.messages.forEach(m => appendMessage(m));
+          scrollToBottom();
+          break;
+        case 'message':
+          appendMessage(msg.message);
+          scrollToBottom();
+          break;
+        case 'user_joined':
+          appendSystem(`${msg.nickname} зашёл в чат`);
+          break;
+        case 'user_left':
+          appendSystem(`${msg.nickname} вышел из чата`);
+          break;
+        case 'users':
+          renderUsers(msg.users);
+          break;
+        case 'typing':
+          document.getElementById('typing').textContent = `${msg.nickname} печатает...`;
+          setTimeout(() => { document.getElementById('typing').textContent = ''; }, 2000);
+          break;
+        case 'channel_created':
+          fetch('/api/channels').then(r => r.json()).then(renderChannels);
+          break;
+      }
+    }
+    
+    function appendMessage(msg) {
+      const el = document.getElementById('messages');
+      const time = new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const div = document.createElement('div');
+      div.className = 'msg';
+      div.innerHTML = `
+        <div class="msg-header">
+          <span class="msg-nick" style="color:${msg.color}">${escapeHtml(msg.nickname)}</span>
+          <span class="msg-time">${time}</span>
+        </div>
+        <div class="msg-text">${escapeHtml(msg.text)}</div>
+      `;
+      el.appendChild(div);
+    }
+    
+    function appendSystem(text) {
+      const el = document.getElementById('messages');
+      const div = document.createElement('div');
+      div.className = 'msg msg-system';
+      div.textContent = text;
+      el.appendChild(div);
+    }
+    
+    function renderUsers(users) {
+      document.getElementById('users-list').innerHTML = users.map(u => `
+        <div class="user-item"><span class="user-dot" style="background:${u.color}"></span>${escapeHtml(u.nickname)}</div>
+      `).join('');
+      document.getElementById('stat-users').textContent = users.length;
+    }
+    
+    function switchChannel(id) {
+      currentChannel = id;
+      document.getElementById('messages').innerHTML = '';
+      ws.send(JSON.stringify({ type: 'join', nickname, channel: id }));
+      
+      fetch('/api/channels').then(r => r.json()).then(chs => {
+        const ch = chs.find(c => c.id === id);
+        if (ch) {
+          document.getElementById('channel-icon').textContent = ch.icon;
+          document.getElementById('channel-name').textContent = ch.name;
+          document.getElementById('channel-desc').textContent = ch.description;
+        }
+        renderChannels(chs);
+      });
+    }
+    
+    function sendMessage() {
+      const input = document.getElementById('msg-input');
+      const text = input.value.trim();
+      if (!text || !ws) return;
+      ws.send(JSON.stringify({ type: 'message', text }));
+      input.value = '';
+    }
+    
+    document.getElementById('send-btn').onclick = sendMessage;
+    document.getElementById('msg-input').onkeydown = (e) => {
+      if (e.key === 'Enter') sendMessage();
+      else ws.send(JSON.stringify({ type: 'typing' }));
+    };
+    
+    function scrollToBottom() {
+      const el = document.getElementById('messages');
+      el.scrollTop = el.scrollHeight;
+    }
+    
+    function escapeHtml(str) {
+      return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+  </script>
+</body>
+</html>
